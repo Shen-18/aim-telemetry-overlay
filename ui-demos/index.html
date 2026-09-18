@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SCUT Racing · 遥测叠加层预览</title>
+<style>
+  :root {
+    --bg: #15151e; --panel: #202030; --line: #38384a;
+    --text: #f0f0f4; --muted: #9a9aad; --accent: #e10600;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: "Segoe UI", "Microsoft YaHei", sans-serif; padding: 24px 32px 64px; }
+  h1 { font-size: 20px; font-weight: 600; letter-spacing: 1px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 6px 0 20px; }
+  .sub b { color: var(--text); font-weight: 600; }
+
+  .bgbar { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .bgbar span.label { font-size: 12px; color: var(--muted); margin-right: 4px; }
+  .bgbtn { padding: 6px 14px; font-size: 12px; border: 1px solid var(--line); background: var(--panel);
+           color: var(--muted); border-radius: 999px; cursor: pointer; }
+  .bgbtn.active { border-color: var(--accent); color: var(--text); }
+
+  .stage { position: relative; width: 100%; aspect-ratio: 16/9; border-radius: 8px; overflow: hidden;
+           border: 1px solid var(--line); background: #1c2026; }
+  .stage > * { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .bg-scene { background:
+      linear-gradient(180deg, #3a4a5c 0%, #55606a 34%, #2e3238 34.5%, #23262b 62%, #1a1c20 100%); }
+  .bg-scene::before { content: ""; position: absolute; inset: 34.5% 0 0 0;
+      background: repeating-linear-gradient(90deg, transparent 0 46px, rgba(255,255,255,.10) 46px 74px);
+      transform: perspective(320px) rotateX(58deg) scale(2.4); transform-origin: top center; }
+  .bg-scene::after { content: ""; position: absolute; left: -10%; right: -10%; top: 30%; height: 10%;
+      background: radial-gradient(ellipse at center, rgba(255,255,255,.16), transparent 70%); }
+  .bg-checker { background: conic-gradient(#c8ccd2 0 25%, #9aa0a8 0 50%, #c8ccd2 0 75%, #9aa0a8 0) 0 0/32px 32px; }
+  .bg-gray { background: #525a63; }
+  .bg-dark { background: #101216; }
+  .overlay-img { object-fit: contain; }
+
+  .columns { display: grid; grid-template-columns: 1.5fr 1fr; gap: 24px; margin-top: 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px; }
+  .panel h3 { font-size: 14px; margin-bottom: 8px; }
+  .panel p { font-size: 13px; line-height: 1.7; color: var(--muted); }
+  .panel code { color: var(--text); }
+  video { width: 100%; border-radius: 8px; background: #000; display: block; }
+  .note { margin-top: 10px; font-size: 12px; color: var(--muted); }
+  @media (max-width: 1100px) { .columns { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+  <h1>遥测叠加层 · 卡片舱布局</h1>
+  <p class="sub">数据来自 <b>Du.csv</b> 真实记录（低速测试数据）。切换背景模拟行车画面评估<b>遮挡程度</b>。</p>
+
+  <div class="bgbar">
+    <span class="label">背景：</span>
+    <button class="bgbtn active" data-bg="bg-scene">模拟行车画面</button>
+    <button class="bgbtn" data-bg="bg-gray">灰底</button>
+    <button class="bgbtn" data-bg="bg-checker">棋盘（透明区）</button>
+    <button class="bgbtn" data-bg="bg-dark">纯黑</button>
+  </div>
+
+  <div class="stage" id="main-stage">
+    <div class="bg-scene bglayer"></div>
+    <img class="overlay-img" id="main-img" alt="叠加层预览">
+  </div>
+
+  <div class="columns">
+    <div class="panel">
+      <h3>动态预览</h3>
+      <video id="main-video" controls muted loop playsinline></video>
+      <p class="note">灰底动态预览（preview.mp4）。正式交付为 2560×1440（2K）透明 MOV
+         （ProRes 4444 / QTRLE ARGB），叠在剪辑软件的录像轨上层，
+         时间对齐通过 config 的 sync 锚点完成。</p>
+    </div>
+    <div class="panel">
+      <h3>布局说明</h3>
+      <p id="demo-desc"></p>
+      <h3 style="margin-top:14px">调整方式</h3>
+      <p>所有控件的位置、大小、透明度都在 <code>layouts.py</code> 的 spec 列表里；
+         控件实现在 <code>widgets.py</code>（17 种）。改完跑
+         <code>render_demo.py --csv &lt;AiM.csv&gt; --demo all --video</code> 重新生成。</p>
+    </div>
+  </div>
+
+<script src="output/demos.js"></script>
+<script>
+const OUT = 'output/';
+const V = '?v=' + Date.now();  // 缓存戳：每次打开都取最新渲染产物
+let currentBg = 'bg-scene';
+
+function bgButtons() {
+  document.querySelectorAll('.bgbtn').forEach(btn => {
+    btn.onclick = () => {
+      document.querySelectorAll('.bgbtn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentBg = btn.dataset.bg;
+      document.querySelectorAll('.bglayer').forEach(b => { b.className = 'bglayer ' + currentBg; });
+    };
+  });
+}
+
+function init() {
+  const demo = (window.DEMOS || [])[0];
+  if (!demo) return;
+  const frame = demo.files.find(f => f.startsWith('frame_2')) || demo.files.find(f => f.endsWith('.png'));
+  document.getElementById('main-img').src = OUT + demo.id + '/' + frame + V;
+  if (demo.files.includes('preview.mp4'))
+    document.getElementById('main-video').src = OUT + demo.id + '/preview.mp4' + V;
+  document.getElementById('demo-desc').textContent = demo.desc;
+}
+bgButtons();
+init();
+</script>
+</body>
+</html>

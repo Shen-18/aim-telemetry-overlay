@@ -1,0 +1,6 @@
+interface:
+  display_name: "AiM 透明仪表盘"
+  short_description: "上传行驶数据生成透明视频，支持四电机扭矩和车载录像时间码对齐"
+  default_prompt: "使用 $aim-telemetry-overlay，根据我上传的数据生成透明仪表盘视频。"
+policy:
+  allow_implicit_invocation: true

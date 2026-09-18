@@ -1,0 +1,16 @@
+{
+  "id": "my_layout",
+  "name": "示例 · 我自己的布局",
+  "desc": "演示用 JSON 自由摆放控件：复制本文件改坐标/增删控件，用 --layout 传入渲染。",
+  "widgets": [
+    {"type": "logo", "x": 40, "y": 34, "origin": "tl", "height": 46, "opacity": 0.95},
+    {"type": "torque_strip", "x": 0, "y": 0, "origin": "tl", "max_h": 12, "opacity": 0.95},
+    {"type": "speed_dial", "x": 60, "y": 60, "origin": "br", "radius": 90, "number_size": 62, "power": true},
+    {"type": "value_chip", "x": 44, "y": 120, "origin": "bl", "title": "HV BUS", "source": "Battery Volt", "unit": "V", "digits": 1, "w": 130},
+    {"type": "value_chip", "x": 44, "y": 180, "origin": "bl", "title": "LOGGER", "source": "LoggerTemp", "unit": "°C", "digits": 0, "w": 130},
+    {"type": "g_meter", "x": 300, "y": 40, "origin": "bl", "radius": 50, "variant": "ring", "value": true},
+    {"type": "gps_map", "x": 460, "y": 36, "origin": "bl", "w": 190, "h": 120, "route_alpha": 0.5, "dot_r": 4, "label": "GPS"},
+    {"type": "pedal_bars", "x": 60, "y": 40, "origin": "tr", "bar_w": 10, "bar_h": 160, "gap": 16, "variant": "edge", "opacity": 0.9},
+    {"type": "timecode", "x": 960, "y": 1070, "origin": "bl", "opacity": 0.8}
+  ]
+}

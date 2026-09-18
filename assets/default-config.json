@@ -1,0 +1,132 @@
+{
+  "fps": 100,
+  "render_fps": 20,
+  "render_workers": 8,
+  "alpha_codec": "qtrle",
+  "padding_seconds": {
+    "head": 5,
+    "tail": 5
+  },
+  "width": 2560,
+  "height": 1440,
+  "speed_max_kmh": 120,
+  "torque_max_nm": 25,
+  "g_max": 2,
+  "g_ball_direction": -1,
+  "trail_seconds": 1.2,
+  "max_gap_seconds": 0.5,
+  "channels": {
+    "speed": [
+      "VehSpd"
+    ],
+    "throttle": [
+      "Acc-2"
+    ],
+    "brake": [
+      "Ave Brake"
+    ],
+    "latitude": [
+      "GPS Latitude"
+    ],
+    "longitude": [
+      "GPS Longitude"
+    ],
+    "acc_x": [
+      "ACC X"
+    ],
+    "acc_y": [
+      "ACC Y"
+    ]
+  },
+  "motors": {
+    "FL": {
+      "active": "auto",
+      "torque": [
+        "FL Motor Torque",
+        "FL Torque"
+      ],
+      "rpm": [
+        "FL MOTOR SPEED",
+        "FL RPM"
+      ]
+    },
+    "FR": {
+      "active": "auto",
+      "torque": [
+        "FR Motor Torque",
+        "FR Torque"
+      ],
+      "rpm": [
+        "FR MOTOR SPEED",
+        "FR RPM"
+      ]
+    },
+    "RL": {
+      "active": "auto",
+      "torque": [
+        "L Motor Torque",
+        "RL Motor Torque",
+        "RL Torque"
+      ],
+      "rpm": [
+        "L MOTOR SPEED",
+        "RL MOTOR SPEED",
+        "RL RPM"
+      ]
+    },
+    "RR": {
+      "active": "auto",
+      "torque": [
+        "R Motor Torque",
+        "RR Motor Torque",
+        "RR Torque"
+      ],
+      "rpm": [
+        "R MOTOR SPEED",
+        "RR MOTOR SPEED",
+        "RR RPM"
+      ]
+    }
+  },
+  "sync": {
+    "timeline_fps": 100,
+    "offset_seconds": 0,
+    "anchors": [],
+    "output_start": 0,
+    "duration": null,
+    "show_timecode": false
+  },
+  "layout": {
+    "widgets": [
+      {
+        "type": "logo",
+        "x": 60,
+        "y": 48,
+        "origin": "tl",
+        "height": 56,
+        "opacity": 0.95
+      },
+      {
+        "type": "timing_bar",
+        "x": 60,
+        "y": 48,
+        "origin": "tr",
+        "w": 370,
+        "h": 60,
+        "opacity": 0.94
+      },
+      {
+        "type": "bottom_bar",
+        "x": 0,
+        "y": 0,
+        "origin": "bl",
+        "h": 172,
+        "max_deg": 160,
+        "positive_left": true,
+        "opacity": 0.95,
+        "torque_pos_max": 20,
+        "torque_neg_max": 10
+      }
+    ]
+  }
+}

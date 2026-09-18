@@ -1,0 +1,73 @@
+{
+  "fps": 30,
+  "render_fps": 30,
+  "speed_max_kmh": 120,
+  "torque_max_nm": 20,
+  "g_max": 2,
+  "g_ball_direction": -1,
+  "trail_seconds": 1.2,
+  "max_gap_seconds": 0.5,
+  "channels": {
+    "speed": "VehSpd",
+    "throttle": "Acc-2",
+    "brake": "Ave Brake",
+    "latitude": "GPS Latitude",
+    "longitude": "GPS Longitude",
+    "acc_x": "ACC X",
+    "acc_y": "ACC Y"
+  },
+  "motors": {
+    "FL": {
+      "active": "auto",
+      "torque": [
+        "FL Motor Torque",
+        "FL Torque"
+      ],
+      "rpm": [
+        "FL MOTOR SPEED",
+        "FL RPM"
+      ]
+    },
+    "FR": {
+      "active": "auto",
+      "torque": [
+        "FR Motor Torque",
+        "FR Torque"
+      ],
+      "rpm": [
+        "FR MOTOR SPEED",
+        "FR RPM"
+      ]
+    },
+    "RL": {
+      "active": "auto",
+      "torque": [
+        "L Motor Torque",
+        "RL Motor Torque"
+      ],
+      "rpm": [
+        "L MOTOR SPEED",
+        "RL RPM"
+      ]
+    },
+    "RR": {
+      "active": "auto",
+      "torque": [
+        "R Motor Torque",
+        "RR Motor Torque"
+      ],
+      "rpm": [
+        "R MOTOR SPEED",
+        "RR RPM"
+      ]
+    }
+  },
+  "sync": {
+    "timeline_fps": 30,
+    "offset_seconds": 0,
+    "anchors": [],
+    "output_start": 0,
+    "duration": null,
+    "show_timecode": false
+  }
+}
