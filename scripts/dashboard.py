@@ -6,6 +6,10 @@ from PIL import Image
 from telemetry import config, prepare
 from hud import make_renderer
 
+# ffmpeg/ffprobe 是控制台程序；pythonw 启动 GUI 时父进程无控制台，
+# 子进程会被系统新开可见控制台窗口（黑框），必须显式禁止（仅 Windows 有效）
+NO_WINDOW = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
+
 def render_indices(frame_count,output_fps,render_fps):
     if output_fps%render_fps:
         raise ValueError('fps must be an integer multiple of render_fps')
@@ -62,7 +66,7 @@ def encode(ff,frames,path,c,alpha,comment='',input_fps=None,output_fps=None,outp
     if comment: args+=['-metadata','comment='+comment]
     args+=[str(path)]
     with path.with_suffix('.log').open('w',encoding='utf-8') as log:
-        p=subprocess.Popen(args,stdin=subprocess.PIPE,stderr=log)
+        p=subprocess.Popen(args,stdin=subprocess.PIPE,stderr=log,**NO_WINDOW)
         try:
             for frame in frames:
                 data = frame if isinstance(frame, (bytes, bytearray)) else frame.tobytes()
@@ -73,7 +77,7 @@ def encode(ff,frames,path,c,alpha,comment='',input_fps=None,output_fps=None,outp
             p.kill();p.wait();raise
 def verify(path,report=None):
     path=Path(path);ff=ffmpeg_path()
-    meta=subprocess.run([ff,'-hide_banner','-i',str(path)],capture_output=True,text=True,encoding='utf-8',errors='replace').stderr
+    meta=subprocess.run([ff,'-hide_banner','-i',str(path)],capture_output=True,text=True,encoding='utf-8',errors='replace',**NO_WINDOW).stderr
     codec=(report or {}).get('alpha_codec')
     is_qtrle='qtrle' in meta and 'argb' in meta
     is_prores='prores' in meta and re.search(r'yuva444p\d+le',meta)
@@ -99,7 +103,7 @@ def verify(path,report=None):
         if not match or abs(float(match[1])-report['fps'])>0.01: raise ValueError('Frame rate mismatch')
         checks=[]
         for t,expected_blank in verification_samples(report):
-            result=subprocess.run([ff,'-v','error','-ss',str(t),'-i',str(path),'-frames:v','1','-f','rawvideo','-pix_fmt','rgba','pipe:1'],capture_output=True,check=True)
+            result=subprocess.run([ff,'-v','error','-ss',str(t),'-i',str(path),'-frames:v','1','-f','rawvideo','-pix_fmt','rgba','pipe:1'],capture_output=True,check=True,**NO_WINDOW)
             a=np.frombuffer(result.stdout,np.uint8).reshape(h,w,4)
             max_alpha=int(a[:,:,3].max())
             if expected_blank:
@@ -145,6 +149,8 @@ def render(args):
     (out/'使用说明.txt').write_text(f"透明视频：{final.name}\n{c['width']}×{c['height']} / {c['fps']} fps / {report['duration']:.3f} 秒\n"
         f"文件头部有 {report['padding']['head_seconds']:.3f} 秒空数据 HUD，尾部有 {report['padding']['tail_seconds']:.3f} 秒空数据 HUD（UI 保留、数值为 --、柱条为空）；数据内容时长 {report['content_duration']:.3f} 秒。\n"
         f"放在录像上方轨道。文件第 0 帧应放在录像时间轴 {report['alignment']['output_start']:.3f} 秒。\n"
+        "校对效果请以剪辑软件的合成画面或 preview.mp4 为准；直接用播放器播放透明 MOV 会忽略\n"
+        "alpha 通道，半透明元素（如速度条底轨、卡片底色）会显示为实心白色，看起来像 UI 画错。\n"
         "灰底 preview.mp4 仅用于预览。report.json 记录映射、同步公式与缺失通道。\n"
         "零偏移不表示已经和录像同步；未提供同步点时保留数据原始秒数。\n"
         "界面：左上 SCUT Racing 白色 logo，右上计时条（时间为主，车辆/车手辅助），底部通栏信息带从左到右为 "

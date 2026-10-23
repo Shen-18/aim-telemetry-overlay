@@ -16,9 +16,9 @@ from PySide6.QtCore import Qt, QThread, Signal, QTimer, QSize
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QProgressBar, QFileDialog, QFrame, QSpinBox,
-    QLineEdit, QMessageBox, QGraphicsDropShadowEffect
+    QLineEdit, QMessageBox, QGraphicsDropShadowEffect, QComboBox, QScrollArea
 )
-from PySide6.QtGui import QColor, QFont, QIcon, QDragEnterEvent, QDropEvent, QCursor
+from PySide6.QtGui import QColor, QFont, QIcon, QDragEnterEvent, QDropEvent, QCursor, QPixmap
 
 import telemetry
 import dashboard
@@ -31,6 +31,41 @@ def format_seconds(sec: float) -> str:
     if h > 0:
         return f"{h:02d}:{m:02d}:{s:02d}"
     return f"{m:02d}:{s:02d}"
+
+
+NULL_CHANNEL = "（不绑定）"
+
+# 通道绑定槽位：(槽位id, 显示名, 分组, 默认候选, 路由)
+# 路由: ("channel", cfg.channels 键) 直连数据层核心通道
+#       ("alias", 控件规范键)   经 config['aliases'] 映射到控件绑定名
+#       ("motor", (槽位, torque/rpm)) 电机通道
+BIND_SLOTS = [
+    ("speed",            "车速 km/h",    "速度",    ["VehSpd"],                       ("channel", "speed")),
+    ("throttle",         "油门开度 %",   "踏板",    ["Acc-2", "Acc2"],                ("channel", "throttle")),
+    ("brake",            "刹车 %",      "踏板",    ["Ave Brake"],                    ("channel", "brake")),
+    ("acc_x",            "加速度 X（纵向）", "G 力",  ["ACC X", "a-x"],                ("channel", "acc_x")),
+    ("acc_y",            "加速度 Y（侧向）", "G 力",  ["ACC Y", "a-y"],                ("channel", "acc_y")),
+    ("latitude",         "GPS 纬度",     "GPS 轨迹", ["GPS Latitude"],               ("channel", "latitude")),
+    ("longitude",        "GPS 经度",     "GPS 轨迹", ["GPS Longitude"],              ("channel", "longitude")),
+    ("steer",            "转向角度 °",   "转向",    ["Steer Sense", "Ave Steer"],     ("alias", "Steer Sense")),
+    ("battery_soc",      "电池 SOC %",   "电池",    ["Battery Soc"],                  ("alias", "Battery Soc")),
+    ("battery_volt",     "电池电压 V",   "电池",    ["Battery Volt", "Bat Voltage"],  ("alias", "Battery Volt")),
+    ("battery_current",  "电池电流 A",   "电池",    ["Battery Current", "current"],   ("alias", "Battery Current")),
+]
+_BASE_CFG = telemetry.config()
+for _slot in ("FL", "FR", "RL", "RR"):
+    # 电机候选直接取默认配置（RL/RR 含 L/R 命名别名），与管线保持单一事实来源
+    BIND_SLOTS.append((f"motor_{_slot}_torque", f"{_slot} 扭矩 Nm", f"电机 {_slot}",
+                       list(_BASE_CFG['motors'][_slot]['torque']), ("motor", (_slot, "torque"))))
+    BIND_SLOTS.append((f"motor_{_slot}_rpm", f"{_slot} 转速 rpm", f"电机 {_slot}",
+                       list(_BASE_CFG['motors'][_slot]['rpm']), ("motor", (_slot, "rpm"))))
+BIND_GROUPS = []
+for _s in BIND_SLOTS:
+    if not BIND_GROUPS or BIND_GROUPS[-1][0] != _s[2]:
+        BIND_GROUPS.append((_s[2], []))
+    BIND_GROUPS[-1][1].append(_s)
+
+BINDINGS_FILE = PROJECT_ROOT / "bindings.json"   # 按 CSV 文件名记忆手动绑定
 
 
 class RenderWorker(QThread):
@@ -99,7 +134,9 @@ class RenderWorker(QThread):
                 return
 
             self.status_signal.emit("正在高速多核渲染透明视频...")
+            started = time.time()
             indices = list(dashboard.render_indices(len(ts), cfg['fps'], cfg['render_fps']))
+            total_render_frames = len(indices)
             temporary = self.out_dir / 'dashboard.partial.mov'
 
             def on_prog(d):
@@ -130,6 +167,48 @@ class RenderWorker(QThread):
 
         except Exception as e:
             self.finished_signal.emit(False, str(e), "")
+
+
+class PreviewWorker(QThread):
+    """按当前通道绑定渲染一帧预览（峰值速度帧 + 底栏放大），不写输出目录。"""
+    ready = Signal(object, object, list)   # 整帧 QImage, 底栏 QImage, warnings
+    failed = Signal(str)
+
+    def __init__(self, csv_path: str, config_override=None):
+        super().__init__()
+        self.csv_path = csv_path
+        self.config_override = config_override or {}
+
+    def run(self):
+        try:
+            import numpy as np
+            from PIL import Image
+
+            cfg = telemetry.config()
+            cfg.update(self.config_override)
+            data, ts, report = telemetry.prepare(self.csv_path, cfg)
+            draw = dashboard.make_renderer(data, ts, cfg, info=report['meta'])
+            speed = data['VehSpd']
+            idx = int(np.nanargmax(speed)) if np.any(np.isfinite(speed)) else 0
+            im = draw(idx)
+
+            bar_h = int(round(172 * (im.width / 1920))) + int(round(2 * (im.width / 1920)))
+            strip = im.crop((0, im.height - bar_h, im.width, im.height))
+
+            def to_qimage(img: Image.Image, target_w: int) -> 'Image':
+                bg = Image.new('RGBA', img.size, (22, 25, 31, 255))
+                bg.alpha_composite(img.convert('RGBA'))
+                h = max(1, int(round(img.height * target_w / img.width)))
+                rgb = bg.convert('RGB').resize((target_w, h), Image.LANCZOS)
+                from PySide6.QtGui import QImage
+                qimg = QImage(rgb.tobytes(), rgb.width, rgb.height,
+                              rgb.width * 3, QImage.Format_RGB888)
+                return qimg.copy()  # 脱离临时缓冲，跨线程安全
+
+            self.ready.emit(to_qimage(im, 660), to_qimage(strip, 660),
+                            list(report.get('warnings', [])))
+        except Exception as e:
+            self.failed.emit(str(e))
 
 
 QSS_STYLE = """
@@ -290,6 +369,54 @@ QPushButton#dangerBtn:disabled {
     border-color: #30363d;
     color: #484f58;
 }
+
+/* 通道绑定面板 */
+QFrame#bindCard {
+    background-color: #161b22;
+    border: 1px solid #262c36;
+    border-radius: 8px;
+}
+QLabel#bindTitle {
+    font-size: 13px;
+    font-weight: 700;
+    color: #f9fafb;
+}
+QLabel#bindHint {
+    font-size: 11px;
+    color: #8b949e;
+}
+QLabel#bindGroup {
+    font-size: 10px;
+    font-weight: 700;
+    color: #8b949e;
+    letter-spacing: 1px;
+}
+QLabel#bindSlot {
+    font-size: 12px;
+    color: #c9d1d9;
+}
+QScrollArea {
+    border: 1px solid #21262d;
+    border-radius: 10px;
+    background-color: #0d1117;
+}
+QComboBox {
+    background-color: #0d1117;
+    border: 1px solid #30363d;
+    border-radius: 6px;
+    padding: 4px 8px;
+    color: #f3f4f6;
+    font-size: 11px;
+}
+QComboBox:focus {
+    border-color: #38bdf8;
+}
+QComboBox QAbstractItemView {
+    background-color: #161b22;
+    color: #e5e7eb;
+    selection-background-color: #2563eb;
+    selection-color: #ffffff;
+}
 """
 
 
@@ -297,13 +424,17 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("AIM Telemetry Overlay 导出工作台 (2K 100fps)")
-        self.resize(760, 680)
-        self.setMinimumSize(700, 620)
+        self.resize(1280, 840)
+        self.setMinimumSize(1120, 720)
         self.setAcceptDrops(True)
 
         self.current_csv = None
         self.current_meta = None
         self.worker = None
+        self.preview_worker = None
+        self.columns = []
+        self.bind_combos = {}
+        self.bind_labels = {}
 
         self._init_ui()
         self.setStyleSheet(QSS_STYLE)
@@ -311,9 +442,19 @@ class MainWindow(QMainWindow):
     def _init_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
-        main_layout = QVBoxLayout(central)
-        main_layout.setContentsMargins(28, 24, 28, 24)
-        main_layout.setSpacing(16)
+        root_layout = QHBoxLayout(central)
+        root_layout.setContentsMargins(20, 20, 20, 20)
+        root_layout.setSpacing(16)
+
+        # 0. 左侧：通道绑定面板
+        root_layout.addWidget(self._build_bindings_panel())
+
+        # 右侧：原有导出流程
+        right = QWidget()
+        main_layout = QVBoxLayout(right)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(14)
+        root_layout.addWidget(right, 1)
 
         # 1. 顶部 Header
         header_layout = QHBoxLayout()
@@ -390,6 +531,42 @@ class MainWindow(QMainWindow):
 
         self.info_card.setVisible(False)
         main_layout.addWidget(self.info_card)
+
+        # 3.5 预览卡（峰值速度帧整帧 + 底栏放大 + 警告）
+        self.preview_card = QFrame()
+        self.preview_card.setObjectName("infoCard")
+        preview_layout = QVBoxLayout(self.preview_card)
+        preview_layout.setContentsMargins(14, 12, 14, 12)
+        preview_layout.setSpacing(8)
+
+        preview_header = QHBoxLayout()
+        preview_title = QLabel("画面预览（速度峰值帧 · 按当前通道绑定）")
+        preview_title.setStyleSheet("font-size: 12px; font-weight: 600; color: #8b949e;")
+        preview_header.addWidget(preview_title)
+        preview_header.addStretch()
+        self.btn_preview = QPushButton("更新预览")
+        self.btn_preview.setEnabled(False)
+        self.btn_preview.clicked.connect(self._start_preview)
+        preview_header.addWidget(self.btn_preview)
+        preview_layout.addLayout(preview_header)
+
+        self.preview_full = QLabel("载入 CSV 后自动生成预览")
+        self.preview_full.setAlignment(Qt.AlignCenter)
+        self.preview_full.setMinimumHeight(200)
+        self.preview_full.setStyleSheet("color: #484f58; font-size: 12px; background-color: #0d1117; border-radius: 6px;")
+        self.preview_strip = QLabel()
+        self.preview_strip.setAlignment(Qt.AlignCenter)
+        self.preview_strip.setStyleSheet("background-color: #0d1117; border-radius: 6px;")
+        self.preview_warn = QLabel("")
+        self.preview_warn.setWordWrap(True)
+        self.preview_warn.setStyleSheet("color: #f0b72f; font-size: 11px;")
+        self.preview_warn.setVisible(False)
+        preview_layout.addWidget(self.preview_full)
+        preview_layout.addWidget(self.preview_strip)
+        preview_layout.addWidget(self.preview_warn)
+
+        self.preview_card.setVisible(False)
+        main_layout.addWidget(self.preview_card)
 
         # 4. 参数配置行
         config_box = QHBoxLayout()
@@ -485,6 +662,181 @@ class MainWindow(QMainWindow):
         action_layout.addWidget(self.btn_start)
         main_layout.addLayout(action_layout)
 
+    # ---------------- 通道绑定 ----------------
+    _SLOT_COLORS = {'auto': '#6ee7b7', 'miss': '#f85149', 'manual': '#c9d1d9', 'null': '#d29922'}
+
+    def _slot_style(self, state):
+        return f"font-size: 12px; color: {self._SLOT_COLORS[state]};"
+
+    def _build_bindings_panel(self):
+        panel = QScrollArea()
+        panel.setWidgetResizable(True)
+        panel.setFixedWidth(320)
+        panel.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        inner = QWidget()
+        v = QVBoxLayout(inner)
+        v.setContentsMargins(12, 12, 12, 12)
+        v.setSpacing(10)
+
+        title = QLabel("通道绑定")
+        title.setObjectName("bindTitle")
+        v.addWidget(title)
+        self.bind_hint = QLabel("导入 CSV 后按候选名自动匹配；\n未命中的槽位（红字）请手动下拉选择。")
+        self.bind_hint.setObjectName("bindHint")
+        self.bind_hint.setWordWrap(True)
+        v.addWidget(self.bind_hint)
+
+        for group_name, slots in BIND_GROUPS:
+            card = QFrame()
+            card.setObjectName("bindCard")
+            grid = QGridLayout(card)
+            grid.setContentsMargins(10, 8, 10, 10)
+            grid.setHorizontalSpacing(8)
+            grid.setVerticalSpacing(6)
+            grid.setColumnStretch(1, 1)
+
+            gtitle = QLabel(group_name.upper())
+            gtitle.setObjectName("bindGroup")
+            grid.addWidget(gtitle, 0, 0, 1, 2)
+
+            for row, (sid, label, _, _, _) in enumerate(slots, start=1):
+                lbl = QLabel(label)
+                lbl.setObjectName("bindSlot")
+                combo = QComboBox()
+                combo.addItem(NULL_CHANNEL)
+                combo.setEnabled(False)
+                combo.currentIndexChanged.connect(lambda _i, s=sid: self._on_binding_changed(s))
+                self.bind_combos[sid] = combo
+                self.bind_labels[sid] = lbl
+                grid.addWidget(lbl, row, 0)
+                grid.addWidget(combo, row, 1)
+
+            v.addWidget(card)
+
+        v.addStretch()
+        panel.setWidget(inner)
+        return panel
+
+    def _on_binding_changed(self, sid):
+        combo = self.bind_combos[sid]
+        state = 'null' if combo.currentText() == NULL_CHANNEL else 'manual'
+        self.bind_labels[sid].setStyleSheet(self._slot_style(state))
+        self._save_bindings()
+
+    def _load_saved_bindings(self):
+        try:
+            return json.loads(BINDINGS_FILE.read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError):
+            return {}
+
+    def _save_bindings(self):
+        if not self.current_csv:
+            return
+        try:
+            all_map = self._load_saved_bindings()
+            all_map[Path(self.current_csv).name] = {
+                sid: combo.currentText() for sid, *_ in BIND_SLOTS
+                for combo in [self.bind_combos[sid]]
+            }
+            BINDINGS_FILE.write_text(json.dumps(all_map, ensure_ascii=False, indent=2),
+                                     encoding='utf-8')
+        except OSError:
+            pass
+
+    def _collect_bindings(self):
+        """把界面上的下拉选择汇总成 RenderWorker/PreviewWorker 的 config 覆盖项。"""
+        base = telemetry.config()
+        channels = {k: list(v) for k, v in base['channels'].items()}
+        motors = {slot: {k: (list(v) if isinstance(v, list) else v) for k, v in mc.items()}
+                  for slot, mc in base['motors'].items()}
+        aliases = {}
+        for sid, label, group, cands, route in BIND_SLOTS:
+            ch = self.bind_combos[sid].currentText()
+            kind, target = route
+            if ch == NULL_CHANNEL:   # 显式不绑定
+                if kind == 'channel':
+                    channels[target] = None
+                elif kind == 'alias':
+                    aliases[target] = []
+                else:
+                    slot, field = target
+                    motors[slot][field] = None
+                continue
+            if kind == 'channel':
+                channels[target] = [ch]
+            elif kind == 'alias':
+                aliases[target] = [ch]
+            else:
+                slot, field = target
+                motors[slot][field] = [ch]
+        override = {'channels': channels, 'motors': motors}
+        if aliases:
+            override['aliases'] = aliases
+        return override
+
+    def _auto_match_bindings(self):
+        """用默认候选在 CSV 列里自动匹配，填入各下拉框并标色。"""
+        matched = 0
+        for sid, label, group, cands, route in BIND_SLOTS:
+            combo = self.bind_combos[sid]
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem(NULL_CHANNEL)
+            combo.addItems(sorted(self.columns, key=str.lower))
+            hit = telemetry.resolve(cands, self.columns)
+            if hit:
+                combo.setCurrentText(hit)
+                matched += 1
+            else:
+                combo.setCurrentIndex(0)
+            combo.blockSignals(False)
+            self.bind_labels[sid].setStyleSheet(self._slot_style('auto' if hit else 'miss'))
+            combo.setEnabled(True)
+        # 回放该 CSV 上一次的手动绑定（仍存在于此 CSV 列中的才生效）
+        saved = self._load_saved_bindings().get(Path(self.current_csv).name, {})
+        for sid, label, group, cands, route in BIND_SLOTS:
+            if sid in saved and saved[sid] in self.columns:
+                combo = self.bind_combos[sid]
+                combo.blockSignals(True)
+                combo.setCurrentText(saved[sid])
+                combo.blockSignals(False)
+                self.bind_labels[sid].setStyleSheet(self._slot_style('manual'))
+        self.bind_hint.setText(f"已自动匹配 {matched}/{len(BIND_SLOTS)} 个槽位，红色槽位需手动选择。")
+
+    # ---------------- 预览 ----------------
+    def _start_preview(self):
+        if not self.current_csv:
+            return
+        if self.preview_worker and self.preview_worker.isRunning():
+            return
+        self.btn_preview.setEnabled(False)
+        self.btn_start.setEnabled(False)
+        self.preview_full.setPixmap(QPixmap())
+        self.preview_full.setText("正在计算数据并渲染预览...")
+        self.preview_strip.setPixmap(QPixmap())
+        self.preview_warn.setVisible(False)
+        self.preview_worker = PreviewWorker(self.current_csv, self._collect_bindings())
+        self.preview_worker.ready.connect(self._on_preview_ready)
+        self.preview_worker.failed.connect(self._on_preview_failed)
+        self.preview_worker.start()
+
+    def _on_preview_ready(self, full_img, strip_img, warnings):
+        self.btn_preview.setEnabled(True)
+        self.btn_start.setEnabled(True)
+        self.preview_full.setText("")
+        self.preview_full.setPixmap(QPixmap.fromImage(full_img))
+        self.preview_strip.setPixmap(QPixmap.fromImage(strip_img))
+        if warnings:
+            self.preview_warn.setText("⚠ " + "；".join(warnings))
+            self.preview_warn.setVisible(True)
+        else:
+            self.preview_warn.setVisible(False)
+
+    def _on_preview_failed(self, msg):
+        self.btn_preview.setEnabled(True)
+        self.btn_start.setEnabled(False)
+        self.preview_full.setText(f"预览失败：{msg}")
+
     # 拖拽事件处理
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
@@ -521,33 +873,43 @@ class MainWindow(QMainWindow):
             self.status_badge.setText("正在分析数据...")
             self.status_badge.setStyleSheet("background-color: #1e3a8a; color: #93c5fd; border: 1px solid #3b82f6; border-radius: 12px; padding: 4px 12px; font-size: 11px; font-weight: 600;")
             QApplication.processEvents()
-
-            cfg = telemetry.config()
-            _, _, report = telemetry.prepare(csv_path, cfg)
+            QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
+            try:
+                df, meta, units = telemetry.load_csv(csv_path)
+                self.columns = list(df.columns)
+                duration = float(meta.get('Duration', 0) or 0)
+                if duration <= 0 and len(df):
+                    duration = float(df['Time'].max())
+            finally:
+                QApplication.restoreOverrideCursor()
 
             self.current_csv = csv_path
-            self.current_meta = report
+            self.current_meta = meta
 
-            meta = report.get("meta", {})
-            self.meta_driver.setText(meta.get("racer") or "未知")
-            self.meta_vehicle.setText(meta.get("vehicle") or "未知")
-            dur = report.get("duration", 0)
-            self.meta_duration.setText(f"{dur:.1f} 秒 ({format_seconds(dur)})")
-            self.meta_frames.setText(f"{report.get('frames', 0):,} 帧")
+            self.meta_driver.setText(meta.get("Racer") or "未知")
+            self.meta_vehicle.setText(meta.get("Vehicle") or "未知")
+            fps = telemetry.config()['fps']
+            self.meta_duration.setText(f"{duration:.1f} 秒 ({format_seconds(duration)})")
+            self.meta_frames.setText(f"{int(round(duration * fps)):,} 帧")
+
+            self._auto_match_bindings()
 
             stem = Path(csv_path).stem
             clean_stem = stem.replace(" ", "_")
             out_path = PROJECT_ROOT / f"output-{clean_stem}"
             self.edit_output.setText(str(out_path))
 
-            self.drop_label.setText(f"已载入: {Path(csv_path).name}")
+            self.drop_label.setText(f"已载入: {Path(csv_path).name}（{len(self.columns)} 个通道）")
             self.drop_icon.setText("✅")
             self.drop_zone.setProperty("hasFile", "true")
             self.drop_zone.style().unpolish(self.drop_zone)
             self.drop_zone.style().polish(self.drop_zone)
 
             self.info_card.setVisible(True)
+            self.preview_card.setVisible(True)
+            self.btn_preview.setEnabled(True)
             self.btn_start.setEnabled(True)
+            self._start_preview()
 
             self.status_badge.setText("就绪")
             self.status_badge.setStyleSheet("background-color: #064e3b; color: #6ee7b7; border: 1px solid #10b981; border-radius: 12px; padding: 4px 12px; font-size: 11px; font-weight: 600;")
@@ -566,11 +928,16 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "提示", "请指定有效的输出路径！")
             return
 
+        if self.bind_combos['speed'].currentText() == NULL_CHANNEL:
+            QMessageBox.warning(self, "提示", "速度通道未绑定，HUD 无法渲染。\n请在左侧「速度」区选择车速通道。")
+            return
+
         workers = self.spin_cpu.value()
 
         self.btn_start.setEnabled(False)
         self.btn_cancel.setEnabled(True)
         self.btn_select.setEnabled(False)
+        self.btn_preview.setEnabled(False)
         self.drop_zone.setEnabled(False)
         self.edit_output.setEnabled(False)
         self.btn_browse_out.setEnabled(False)
@@ -580,7 +947,7 @@ class MainWindow(QMainWindow):
         self.status_badge.setText("正在渲染...")
         self.status_badge.setStyleSheet("background-color: #1e3a8a; color: #93c5fd; border: 1px solid #3b82f6; border-radius: 12px; padding: 4px 12px; font-size: 11px; font-weight: 600;")
 
-        self.worker = RenderWorker(self.current_csv, out_dir, workers)
+        self.worker = RenderWorker(self.current_csv, out_dir, workers, self._collect_bindings())
         self.worker.progress_signal.connect(self._on_progress)
         self.worker.status_signal.connect(self._on_status)
         self.worker.finished_signal.connect(self._on_finished)
@@ -617,6 +984,7 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(True)
         self.btn_cancel.setEnabled(False)
         self.btn_select.setEnabled(True)
+        self.btn_preview.setEnabled(True)
         self.drop_zone.setEnabled(True)
         self.edit_output.setEnabled(True)
         self.btn_browse_out.setEnabled(True)
@@ -629,7 +997,10 @@ class MainWindow(QMainWindow):
             self.status_badge.setText("渲染完成")
             self.status_badge.setStyleSheet("background-color: #064e3b; color: #6ee7b7; border: 1px solid #10b981; border-radius: 12px; padding: 4px 12px; font-size: 11px; font-weight: 600;")
             self.btn_open_folder.setEnabled(True)
-            QMessageBox.information(self, "导出成功", f"透明视频已成功导出并校验完成！\n\n文件保存于:\n{final_path}")
+            QMessageBox.information(self, "导出成功",
+                f"透明视频已成功导出并校验完成！\n\n文件保存于:\n{final_path}\n\n"
+                "注意：请用剪辑软件叠加到录像上查看效果，或先看同目录 preview.mp4（已合成灰底）。\n"
+                "直接用播放器播放 MOV 会忽略透明通道，半透明元素（如速度条底轨）会显示为实心白色。")
         else:
             self.status_badge.setText("未完成")
             self.status_badge.setStyleSheet("background-color: #7f1d1d; color: #fca5a5; border: 1px solid #ef4444; border-radius: 12px; padding: 4px 12px; font-size: 11px; font-weight: 600;")
@@ -657,12 +1028,25 @@ def main():
         except Exception:
             pass
 
-    app = QApplication(sys.argv)
-    window = MainWindow()
-    if len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
-        window._load_csv(sys.argv[1])
-    window.show()
-    sys.exit(app.exec())
+    try:
+        app = QApplication(sys.argv)
+        window = MainWindow()
+        if len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
+            window._load_csv(sys.argv[1])
+        window.show()
+        sys.exit(app.exec())
+    except Exception:
+        import traceback
+        err = traceback.format_exc()
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                ctypes.windll.user32.MessageBoxW(0, f"工作台启动发生异常：\n\n{err}", "AIM Telemetry Overlay", 0x10)
+            except Exception:
+                pass
+        else:
+            sys.stderr.write(err)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

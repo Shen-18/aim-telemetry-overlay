@@ -2,7 +2,7 @@ import csv, math, tempfile, threading, time, unittest
 from pathlib import Path
 import numpy as np
 from PIL import Image
-from telemetry import config,prepare,alignment,seconds
+from telemetry import config,prepare,alignment,seconds,resolve,load_csv
 from hud import g_ball_offset,make_renderer
 import dashboard
 import widgets
@@ -134,5 +134,82 @@ class TelemetryTests(unittest.TestCase):
         alpha=np.asarray(Image.open(Path(__file__).parent/'assets'/'logo_white.png').convert('RGBA'))[:,:,3]
         visible=alpha>0;low=(alpha>0)&(alpha<32)
         self.assertLess(low.sum()/visible.sum(),.08)
+
+    def test_padded_metadata_rows_do_not_shadow_header(self):
+        # E04 类导出：元数据行（如 'Time,3:17 PM'）被逗号补齐到与表头等宽
+        with tempfile.TemporaryDirectory() as t:
+            path=Path(t)/'session.csv'
+            pad=['']*87
+            with path.open('w',newline='') as f:
+                w=csv.writer(f)
+                w.writerow(['Format','AiM CSV File']+pad)
+                w.writerow(['Time','3:17 PM']+pad)          # 元数据 Time 行，宽度 89
+                w.writerow(['Vehicle','e04']+pad)
+                w.writerow(['Duration','2']+pad)
+                w.writerow(['Time','VehSpd','Acc-2','Ave Brake','ACC X','ACC Y'])
+                w.writerow(['s','km/h','%','#','g','g'])
+                for i in range(101):
+                    w.writerow([i/100,36,50,8,0.1,0.2])
+            d,meta,units=load_csv(path)
+            self.assertIn('VehSpd',d.columns);self.assertEqual(meta['Vehicle'],'e04')
+            d,_,r=prepare(path,self.unpadded_config(),duration=.1)
+            self.assertEqual(d['VehSpd'][5],36)
+
+    def test_resolve_matches_channels_regardless_of_word_order(self):
+        cols=['Time','Motor Torque FL','Motor Speed FL']
+        self.assertEqual(resolve('FL Motor Torque',cols),'Motor Torque FL')
+        self.assertEqual(resolve(['FL MOTOR SPEED','FL RPM'],cols),'Motor Speed FL')
+        self.assertIsNone(resolve('Rear Torque',cols))
+        # 无精确命中时，同词集两列视为歧义
+        with self.assertRaises(ValueError):
+            resolve('Motor FL Torque',['Time','FL Motor Torque','Motor Torque FL'])
+
+    def test_aliases_bind_widget_channels_to_renamed_columns(self):
+        with tempfile.TemporaryDirectory() as t:
+            path=Path(t)/'session.csv'
+            columns=['Time','VehSpd','Acc-2','Ave Brake','ACC X','ACC Y','Bat Voltage','current']
+            with path.open('w',newline='') as f:
+                w=csv.writer(f);w.writerow(columns);w.writerow(['s','km/h','%','#','g','g','V','A'])
+                for i in range(101):
+                    w.writerow([i/100,36,50,8,0.1,0.2,560,42])
+            c=self.unpadded_config();c['fps']=100
+            c['aliases']={'Battery Volt':'Bat Voltage','Battery Current':['current']}
+            d,_,r=prepare(path,c,duration=.1)
+            self.assertEqual(d['Battery Volt'][5],560)
+            self.assertEqual(d['Battery Current'][5],42)
+            self.assertNotIn('Missing channel: Battery Volt',r['warnings'])
+            self.assertNotIn('Missing channel: Battery Current',r['warnings'])
+
+    def test_steer_explicit_unbind_beats_legacy_fallback(self):
+        # 转向控件只读规范键 Steer Sense；绑定面板选「不绑定」时不得再从 Ave Steer 降级出数值
+        with tempfile.TemporaryDirectory() as t:
+            path=Path(t)/'session.csv'
+            columns=['Time','VehSpd','Acc-2','Ave Brake','ACC X','ACC Y','Ave Steer']
+            with path.open('w',newline='') as f:
+                w=csv.writer(f);w.writerow(columns);w.writerow(['s','km/h','%','#','g','g','deg'])
+                for i in range(101):
+                    w.writerow([i/100,36,50,8,0.1,0.2,42])
+            c=self.unpadded_config();c['fps']=100
+            c['layout']={'widgets':[{'type':'bottom_bar','h':172}]}
+            c['aliases']={'Steer Sense':[]}
+            d,_,r=prepare(path,c,duration=.1)
+            self.assertTrue(np.isnan(d['Steer Sense']).all())
+            c['aliases']={'Steer Sense':'Ave Steer'}
+            d,_,r=prepare(path,c,duration=.1)
+            self.assertEqual(d['Steer Sense'][5],42)
+
+    def test_speed_channel_rebind_flows_into_canonical_key(self):
+        with tempfile.TemporaryDirectory() as t:
+            path=Path(t)/'session.csv'
+            columns=['Time','GPS Speed','Acc-2','Ave Brake','ACC X','ACC Y']
+            with path.open('w',newline='') as f:
+                w=csv.writer(f);w.writerow(columns);w.writerow(['s','km/h','%','#','g','g'])
+                for i in range(101):
+                    w.writerow([i/100,49.7,50,8,0.1,0.2])
+            c=self.unpadded_config();c['fps']=100
+            c['channels']['speed']=['GPS Speed']
+            d,_,r=prepare(path,c,duration=.1)
+            self.assertEqual(d['VehSpd'][5],49.7)
+            self.assertEqual(r['channels']['speed'],'GPS Speed')
 
 if __name__=='__main__': unittest.main()

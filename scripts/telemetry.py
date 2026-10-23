@@ -30,6 +30,12 @@ def config(path=None):
     if c['g_ball_direction'] not in [-1,1]: raise ValueError('g_ball_direction must be -1 (inertial) or 1 (acceleration)')
     for m in c['motors'].values():
         if not (isinstance(m['active'],bool) or m['active']=='auto'): raise ValueError('Motor active must be true, false, or auto')
+    aliases=c.get('aliases') or {}
+    for k,v in aliases.items():
+        vals=v if isinstance(v,list) else [v]
+        if not isinstance(k,str) or not all(isinstance(s,str) and s for s in vals):
+            raise ValueError('aliases must map a channel name to a name or list of names')
+    c['aliases']=aliases
     return c
 def norm(s): return re.sub(r'[^a-z0-9]','',s.lower())
 def load_csv(path):
@@ -40,8 +46,10 @@ def load_csv(path):
         try: text=raw.decode(enc);break
         except UnicodeDecodeError: continue
     rows=list(csv.reader(io.StringIO(text)))
+    # 表头行 = 首格为 time 的行中「非空单元格最多」的一行（元数据行也会被逗号补齐成
+    # 与表头等宽，如 'Time,3:17 PM'+空列，按总宽选会误选元数据行）
     candidates=[i for i,r in enumerate(rows) if r and norm(r[0])=='time']
-    header=max(candidates,key=lambda i:len(rows[i])) if candidates else None
+    header=max(candidates,key=lambda i:(sum(1 for c in rows[i] if str(c).strip()),len(rows[i]))) if candidates else None
     if header is None: raise ValueError('No Time header found in CSV')
     columns=rows[header]
     if len(set(columns))!=len(columns): raise ValueError('Duplicate channel names; export distinct channel names')
@@ -60,6 +68,14 @@ def resolve(spec,columns):
     candidates=[spec] if isinstance(spec,str) else spec
     for name in candidates:
         found=[c for c in columns if norm(c)==norm(name)]
+        if len(found)>1: raise ValueError('Ambiguous channel '+name)
+        if found: return found[0]
+    # 词序无关回退：不同车辆的记录仪通道命名词序不同（'FL Motor Torque' vs 'Motor Torque FL'）
+    def toks(s): return frozenset(re.findall(r'[a-z0-9]+',s.lower()))
+    for name in candidates:
+        t=toks(name)
+        if not t: continue
+        found=[c for c in columns if toks(c)==t]
         if len(found)>1: raise ValueError('Ambiguous channel '+name)
         if found: return found[0]
     return None
@@ -147,10 +163,11 @@ def prepare(path,c,start=None,duration=None):
         if kind=='speed' and u in ['m/s','mps']: factor=3.6
         elif kind=='speed' and u in ['mph']: factor=1.609344
         elif kind=='g' and u in ['m/s2','m/s^2','m/s²']: factor=1/9.80665
-        elif kind=='speed' and u not in ['km/h','kph','kmh','']: raise ValueError('Unsupported speed unit '+u)
-        elif kind=='g' and u not in ['g','']: raise ValueError('Unsupported acceleration unit '+u)
-        elif kind=='torque' and u not in ['nm','n m','n*m','n·m','']: raise ValueError('Expected Nm for '+name)
-        elif kind=='rpm' and u not in ['rpm','']: raise ValueError('Expected rpm for '+name)
+        # '#' 是 AiM 的「未指定单位」标记，显式绑定视为已确认
+        elif kind=='speed' and u not in ['km/h','kph','kmh','','#']: raise ValueError('Unsupported speed unit '+u)
+        elif kind=='g' and u not in ['g','','#']: raise ValueError('Unsupported acceleration unit '+u)
+        elif kind=='torque' and u not in ['nm','n m','n*m','n·m','','#']: raise ValueError('Expected Nm for '+name)
+        elif kind=='rpm' and u not in ['rpm','','#']: raise ValueError('Expected rpm for '+name)
         t=a.index.to_numpy();v=a.to_numpy()*factor
         result=np.interp(query,t,v,left=np.nan,right=np.nan)
         right=np.searchsorted(t,query,side='left');inside=(right>0)&(right<len(t));idx=np.clip(right,1,max(1,len(t)-1))
@@ -187,6 +204,10 @@ def prepare(path,c,start=None,duration=None):
     data['Video Time']=video_time;data['Data Time']=query;data['Overlay Active']=overlay_active
     for key in bound_channels(c):
         col = resolve(key, d.columns)
+        if col is None:
+            # aliases：把任意 CSV 通道映射为控件绑定的规范名（如 Bat Voltage → Battery Volt）
+            alias = (c.get('aliases') or {}).get(key)
+            col = resolve(alias, d.columns) if alias else None
         if col is None:
             if key in ('Steer Sense', 'Ave Steer') and (resolve('Steer Sense', d.columns) or resolve('Ave Steer', d.columns)):
                 data[key] = np.full(count, np.nan)

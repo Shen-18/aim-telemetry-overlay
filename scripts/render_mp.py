@@ -6,6 +6,10 @@ import sys, os, time, subprocess, shutil, math
 from pathlib import Path
 import multiprocessing as mp
 
+# ffmpeg 是控制台程序；pythonw 启动 GUI 时父进程无控制台，
+# 子进程会被系统新开可见控制台窗口（黑框），必须显式禁止（仅 Windows 有效）
+NO_WINDOW = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
+
 def _worker_render_chunk(chunk_id, indices, data, ts, cfg, info, out_mov_str, progress_queue, out_frames):
     from hud import make_renderer
     from dashboard import ffmpeg_path, alpha_codec_args
@@ -33,7 +37,7 @@ def _worker_render_chunk(chunk_id, indices, data, ts, cfg, info, out_mov_str, pr
     ]
     
     with open(log_path, 'w', encoding='utf-8') as log_file:
-        p = subprocess.Popen(args, stdin=subprocess.PIPE, stderr=log_file)
+        p = subprocess.Popen(args, stdin=subprocess.PIPE, stderr=log_file, **NO_WINDOW)
         try:
             batch = 0
             for idx in indices:
@@ -165,7 +169,7 @@ def render_chunks_parallel(data, ts, cfg, info, indices, out_mov_path, workers=8
             str(out_mov_path)
         ]
         
-        ret = subprocess.run(concat_args, capture_output=True)
+        ret = subprocess.run(concat_args, capture_output=True, **NO_WINDOW)
         if ret.returncode != 0:
             raise RuntimeError(f"FFmpeg 无损拼接失败: {ret.stderr.decode('utf-8', errors='replace')}")
             

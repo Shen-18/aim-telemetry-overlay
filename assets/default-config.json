@@ -32,12 +32,15 @@
       "GPS Longitude"
     ],
     "acc_x": [
-      "ACC X"
+      "ACC X",
+      "a-x"
     ],
     "acc_y": [
-      "ACC Y"
+      "ACC Y",
+      "a-y"
     ]
   },
+  "aliases": {},
   "motors": {
     "FL": {
       "active": "auto",

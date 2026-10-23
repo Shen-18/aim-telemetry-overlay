@@ -20,6 +20,25 @@ class LogoAlphaTests(unittest.TestCase):
         self.assertGreater(alpha[1], 160)
         self.assertGreater(alpha[2], 240)
 
+    def test_thin_strokes_reach_full_opacity(self):
+        """细笔画（Racing 下划线那类）必须实心。
+
+        用全局 solid 参考值换算时细笔画永远到不了 255，在深色背景上显示成
+        半透明灰线——这正是素材看起来「发虚」的原因。
+        """
+        blue = np.array([44, 80, 154], dtype=float)
+        rgb = np.full((24, 44, 3), 255.0)
+        rgb[3:12, 5:35] = blue               # 粗块：确定 solid 参考值
+        rgb[15, 5:35] = (blue + 255.0) / 2   # 抗锯齿过渡的中间调
+        rgb[19:21, 5:35] = blue              # 2px 细线
+        alpha = MODULE.extract_alpha(rgb)
+        self.assertEqual(alpha[0, 0], 0)          # 背景透明
+        self.assertEqual(alpha[7, 20], 255)       # 粗块实心
+        self.assertEqual(alpha[19, 20], 255)      # 细线实心（回归点）
+        self.assertEqual(alpha[20, 20], 255)
+        self.assertGreater(alpha[15, 20], 0)      # 贴边过渡仍保留
+        self.assertLess(alpha[15, 20], 255)
+
 
 if __name__ == "__main__":
     unittest.main()

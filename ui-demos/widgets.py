@@ -30,6 +30,12 @@ def with_alpha(color, alpha):
     return (color[0], color[1], color[2], int(alpha))
 
 
+def tone(gray):
+    """深浅烘进 RGB 的装饰色（旧版画法）：不依赖 alpha 通道，
+    忽略 alpha 的播放器/剪辑软件里也呈现同样的浓淡。配合 with_alpha 使用。"""
+    return (gray, gray, gray)
+
+
 def scale_color(color, factor):
     """按 0..1 整体缩放颜色透明度。"""
     return (color[0], color[1], color[2], int(color[3] * factor))
@@ -159,8 +165,8 @@ class RenderContext:
                             if cfg["motors"][s]["active"]] or ["FL", "FR", "RL", "RR"]
 
     def get(self, key, i):
-        arr = self.data[key]
-        return arr[i] if i < len(arr) else float("nan")
+        arr = self.data.get(key)
+        return arr[i] if arr is not None and i < len(arr) else float("nan")
 
     def route(self, w, h):
         """把整段 GPS 轨迹投影到 w×h 的局部坐标（带缓存）。"""
@@ -285,7 +291,11 @@ class LogoWidget(Widget):
         super().__init__(spec, ctx)
         self.height = int(round(float(spec.get("height", 40)) * self.s))
         w, h = self.size()
-        self.image = self.ctx.logo.resize((w, h), Image.Resampling.LANCZOS)
+        # 缩小用 BOX（面积平均）：LANCZOS 的负瓣会在高对比白标笔画外侧留下一圈
+        # alpha 1~24 的白晕，剪辑软件里放大看就是「毛边」；BOX 无振铃，边缘干净。
+        downscaling = w < self.ctx.logo.width and h < self.ctx.logo.height
+        resample = Image.Resampling.BOX if downscaling else Image.Resampling.LANCZOS
+        self.image = self.ctx.logo.resize((w, h), resample)
         if self.opacity < 1.0:
             a = self.image.getchannel("A").point(lambda v: int(v * self.opacity))
             self.image.putalpha(a)
@@ -512,7 +522,8 @@ class SpeedFlatWidget(Widget):
 class SteerIndicatorWidget(Widget):
     """转向角指示：水平标尺 + 中心刻度 + 指针，扁平不挡视野。
 
-    显示约定：左正右负（左打方向指针向左）。source 默认 'Ave Steer'（deg）；
+    显示约定：左正右负（左打方向指针向左）。source 默认 'Steer Sense'（deg），
+    列名不同（如只有 Ave Steer）时经 config aliases 映射到规范名；
     若实测指针方向与打方向相反，在 spec 加 "positive_left": false 翻转。
     """
 
@@ -542,8 +553,6 @@ class SteerIndicatorWidget(Widget):
             dr.line((tx, y - h, tx, y), fill=with_alpha(WHITE, 110 * alpha), width=1)
         # 指针（中心向打方向的实心细条；左正右负）
         v = self.ctx.get(self.source, i)
-        if not np.isfinite(v) and self.source == "Steer Sense":
-            v = self.ctx.get("Ave Steer", i)
         if np.isfinite(v):
             frac = np.clip(v / self.max_deg, -1, 1)
             if not self.positive_left:
@@ -933,7 +942,7 @@ class BottomBarWidget(Widget):
     """
 
     TYPE = "bottom_bar"
-    DEFAULT_SOURCE = ["Steer Sense", "Ave Steer", "Battery Soc", "Battery Volt", "Battery Current"]  # 自动插值
+    DEFAULT_SOURCE = ["Steer Sense", "Battery Soc", "Battery Volt", "Battery Current"]  # 自动插值
 
     BASE_PAD = 15  # 统一留白：屏幕边缘 / 分割线 到内容的距离
     # 仅分割线位移（不改内容位置）：{区块名: 该区块右缘分割线额外右移 px}
@@ -979,15 +988,15 @@ class BottomBarWidget(Widget):
 
         # 通栏底色 + 上缘亮线
         dr.rectangle((0, oy, cw, oy + H), fill=(8, 10, 14, int(100 * alpha)))
-        dr.line((0, oy, cw, oy), fill=with_alpha(WHITE, 60 * alpha), width=max(1, int(round(1 * s))))
+        dr.line((0, oy, cw, oy), fill=with_alpha(tone(57), 255 * alpha), width=max(1, int(round(1 * s))))
 
         def title(cx, text):
-            fonts.text(dr, (cx, title_y), text, int(round(12 * s)), with_alpha(WHITE, 160 * alpha),
+            fonts.text(dr, (cx, title_y), text, int(round(12 * s)), with_alpha(tone(152), 255 * alpha),
                        "regular", anchor="ma", letter_spacing=max(1, int(round(2 * s))))
 
         def separator(x):
             dr.line((x, top - int(round(2 * s)), x, oy + H - int(round(30 * s))),
-                    fill=with_alpha(WHITE, 40 * alpha), width=max(1, int(round(1 * s))))
+                    fill=with_alpha(tone(235), 40 * alpha), width=max(1, int(round(1 * s))))
 
         # ---- GPS 迷你轨迹静态路径（最左）----
         x0, x1 = ox + self.SECTIONS[0][1], ox + self.SECTIONS[0][2]
@@ -997,7 +1006,7 @@ class BottomBarWidget(Widget):
         pts = self.ctx.route(mw, mh)
         if pts is not None:
             draw_lines(dr, [(mx + px, my + py) for px, py in pts],
-                       with_alpha(WHITE, 165 * alpha), max(1, int(round(2 * s))))
+                       with_alpha(tone(157), 255 * alpha), max(1, int(round(2 * s))))
 
         # ---- 电池区静态标签 ----
         x0, x1 = ox + self.SECTIONS[1][1], ox + self.SECTIONS[1][2]
@@ -1009,7 +1018,7 @@ class BottomBarWidget(Widget):
         for k, label in enumerate(labels):
             ix = bx0 + (k % 2) * col_w
             iy = top + int(round(10 * s)) + (k // 2) * row_h
-            fonts.text(dr, (ix, iy), label, int(round(12 * s)), with_alpha(WHITE, 145 * alpha),
+            fonts.text(dr, (ix, iy), label, int(round(12 * s)), with_alpha(tone(138), 255 * alpha),
                        "regular", letter_spacing=max(1, int(round(1 * s))))
         title((x0 + x1) / 2, "BATTERY")
 
@@ -1020,17 +1029,17 @@ class BottomBarWidget(Widget):
         cx, cy = (x0 + x1) / 2, top + ch / 2 - int(round(3 * s))
         bbox = (cx - r, cy - r, cx + r, cy + r)
         arc_w = max(1, int(round(4 * s)))
-        dr.arc(bbox, 90 + g, 450 - g, fill=with_alpha(WHITE, 75 * alpha), width=arc_w)
+        dr.arc(bbox, 90 + g, 450 - g, fill=with_alpha(tone(71), 255 * alpha), width=arc_w)
         usable = 180 - g
         for t_step in (-1.0, -0.5, 0.0, 0.5, 1.0):
             a = math.radians(270 - t_step * usable)
             tick_len = int(round(7 * s))
             dr.line((cx + math.cos(a) * (r - tick_len), cy + math.sin(a) * (r - tick_len),
                      cx + math.cos(a) * r, cy + math.sin(a) * r),
-                    fill=with_alpha(WHITE, 120 * alpha), width=max(1, int(round(1 * s))))
+                    fill=with_alpha(tone(114), 255 * alpha), width=max(1, int(round(1 * s))))
         lr_size = int(round(11 * s))
-        fonts.text(dr, (cx - r - int(round(6 * s)), cy), "L", lr_size, with_alpha(WHITE, 130 * alpha), anchor="rm")
-        fonts.text(dr, (cx + r + int(round(6 * s)), cy), "R", lr_size, with_alpha(WHITE, 130 * alpha), anchor="lm")
+        fonts.text(dr, (cx - r - int(round(6 * s)), cy), "L", lr_size, with_alpha(tone(124), 255 * alpha), anchor="rm")
+        fonts.text(dr, (cx + r + int(round(6 * s)), cy), "R", lr_size, with_alpha(tone(124), 255 * alpha), anchor="lm")
         title(cx, "STEER")
 
         # ---- 速度静态底条与刻度 ----
@@ -1041,17 +1050,17 @@ class BottomBarWidget(Widget):
         bx1 = x1 - P
         bar_y = top + int(round(69 * s))
         fonts.text(dr, (bx0, top + int(round(44 * s))), "km/h", int(round(16 * s)),
-                   with_alpha(WHITE, 165 * alpha), anchor="ls")
+                   with_alpha(tone(157), 255 * alpha), anchor="ls")
         bar_half = max(2, int(round(7 * s)))
         dr.rectangle((bx0, bar_y - bar_half, bx1, bar_y + bar_half),
-                     fill=with_alpha(WHITE, 55 * alpha))
+                     fill=with_alpha(tone(52), 255 * alpha))
         ticks = speed_ticks()
         for k, tick in enumerate(ticks):
             tx = bx0 + (bx1 - bx0) * k / (len(ticks) - 1)
             dr.line((tx, bar_y + int(round(11 * s)), tx, bar_y + int(round(15 * s))),
-                    fill=with_alpha(WHITE, 115 * alpha), width=max(1, int(round(1 * s))))
+                    fill=with_alpha(tone(109), 255 * alpha), width=max(1, int(round(1 * s))))
             fonts.text(dr, (tx, bar_y + int(round(17 * s))), str(tick), int(round(10 * s)),
-                       with_alpha(WHITE, 155 * alpha), anchor="ma")
+                       with_alpha(tone(147), 255 * alpha), anchor="ma")
         title((x0 + x1) / 2, "SPEED")
 
         # ---- 四轮扭矩静态框 ----
@@ -1064,15 +1073,15 @@ class BottomBarWidget(Widget):
             gx = x0 + P + int(round(12 * s)) + k * slot_w + pad_in
             by1 = top + int(round(2 * s)) + bar_h
             dr.rectangle((gx, by1 - bar_h, gx + bar_w, by1),
-                         outline=with_alpha(WHITE, 95 * alpha), width=max(1, int(round(1 * s))))
+                         outline=with_alpha(tone(90), 255 * alpha), width=max(1, int(round(1 * s))))
             neg_h = bar_h * 0.25  # 零线固定 3:1（正:负）
             zero_y = by1 - neg_h
             dr.line((gx + 1, zero_y, gx + bar_w - 1, zero_y),
-                    fill=with_alpha(WHITE, 150 * alpha), width=max(1, int(round(1 * s))))
+                    fill=with_alpha(tone(142), 255 * alpha), width=max(1, int(round(1 * s))))
             fonts.text(dr, (gx + bar_w + int(round(5 * s)), by1 - bar_h / 2 + int(round(9 * s))), "Nm", int(round(10 * s)),
-                       with_alpha(WHITE, 145 * alpha), anchor="lm")
+                       with_alpha(tone(138), 255 * alpha), anchor="lm")
             fonts.text(dr, (gx + bar_w / 2, title_y), slot, int(round(12 * s)),
-                       with_alpha(WHITE, 160 * alpha), anchor="ma", letter_spacing=max(1, int(round(1 * s))))
+                       with_alpha(tone(152), 255 * alpha), anchor="ma", letter_spacing=max(1, int(round(1 * s))))
 
         # ---- 踏板静态框 ----
         x0, x1 = ox + self.SECTIONS[4][1], ox + self.SECTIONS[4][2]
@@ -1084,11 +1093,11 @@ class BottomBarWidget(Widget):
             bx = x0 + P + int(round(2 * s)) + k * slot_w + pad_in + (14 * s if k else 0)
             by1 = top + int(round(2 * s)) + bar_h
             dr.rectangle((bx, by1 - bar_h, bx + bar_w, by1),
-                         outline=with_alpha(WHITE, 80 * alpha), width=max(1, int(round(1 * s))))
+                         outline=with_alpha(tone(76), 255 * alpha), width=max(1, int(round(1 * s))))
             fonts.text(dr, (bx + bar_w + int(round(5 * s)), by1 - bar_h / 2 + int(round(9 * s))), "%", int(round(10 * s)),
-                       with_alpha(WHITE, 145 * alpha), anchor="lm", shadow=False)
+                       with_alpha(tone(138), 255 * alpha), anchor="lm", shadow=False)
             fonts.text(dr, (bx + bar_w / 2, title_y), label, int(round(12 * s)),
-                       with_alpha(WHITE, 160 * alpha), anchor="ma", letter_spacing=max(1, int(round(1 * s))))
+                       with_alpha(tone(152), 255 * alpha), anchor="ma", letter_spacing=max(1, int(round(1 * s))))
 
         # ---- G 力静态圆环（内圈加大、下沉填满）与底排标题 ----
         x0, x1 = ox + self.SECTIONS[5][1], ox + self.SECTIONS[5][2]
@@ -1096,9 +1105,9 @@ class BottomBarWidget(Widget):
         cx, cy = x0 + P + int(round(37 * s)) + int(round(22 * s)) + r, top + int(round(70 * s))
         for rr in (r * 0.62, r):
             dr.ellipse((cx - rr, cy - rr, cx + rr, cy + rr),
-                       outline=with_alpha(WHITE, 80 * alpha), width=max(1, int(round(1 * s))))
-        dr.line((cx - r, cy, cx + r, cy), fill=with_alpha(WHITE, 55 * alpha), width=max(1, int(round(1 * s))))
-        dr.line((cx, cy - r, cx, cy + r), fill=with_alpha(WHITE, 55 * alpha), width=max(1, int(round(1 * s))))
+                       outline=with_alpha(tone(76), 255 * alpha), width=max(1, int(round(1 * s))))
+        dr.line((cx - r, cy, cx + r, cy), fill=with_alpha(tone(52), 255 * alpha), width=max(1, int(round(1 * s))))
+        dr.line((cx, cy - r, cx, cy + r), fill=with_alpha(tone(52), 255 * alpha), width=max(1, int(round(1 * s))))
         # 标题居中于左右两条分割线之间（左线含 BASE_DIVIDER_SHIFT 位移）
         left_div = self.SECTIONS[4][2] + int(round(self.BASE_DIVIDER_SHIFT.get("pedals", 0) * s))
         title((left_div + self.SECTIONS[5][2]) / 2 + int(round(2 * s)), "G-FORCE")
@@ -1145,7 +1154,7 @@ class BottomBarWidget(Widget):
             if unit:
                 ux = ix + dr.textlength(val_str, font=fonts.get(f_size, "bold")) + int(round(6 * s))
                 fonts.text(dr, (ux, iy + int(round(27 * s))), unit, int(round(12 * s)),
-                           with_alpha(WHITE, 150 * alpha), anchor="ls")
+                           with_alpha(tone(142), 255 * alpha), anchor="ls")
 
         # ---- 转向动态弧度与数字 ----
         x0, x1 = ox + self.SECTIONS[2][1], ox + self.SECTIONS[2][2]
@@ -1155,9 +1164,8 @@ class BottomBarWidget(Widget):
         bbox = (cx - r, cy - r, cx + r, cy + r)
         arc_w = max(1, int(round(4 * s)))
         usable = 180 - g
+        # 单一规范键 Steer Sense；列名不同（如 Ave Steer）由 aliases 在数据层映射，不再代码内降级
         v = self.ctx.get("Steer Sense", i)
-        if not np.isfinite(v):
-            v = self.ctx.get("Ave Steer", i)
         steer_f_size = int(round(22 * s))
         if np.isfinite(v):
             frac = float(np.clip(v / self.max_deg, -1, 1))

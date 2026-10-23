@@ -1,40 +1,41 @@
 @echo off
-chcp 65001 >nul
 cd /d "%~dp0"
 
-REM 1. 检查是否存在 Python 环境
-where python >nul 2>nul
-if %errorlevel% neq 0 (
+rem 1. Pick a real Python (skip the Microsoft Store alias stub in WindowsApps)
+set "PY="
+for /f "delims=" %%P in ('where python 2^>nul') do (
+    echo %%P | find /i "WindowsApps" >nul
+    if errorlevel 1 if not defined PY set "PY=%%P"
+)
+if not defined PY (
     echo ========================================================
-    echo   [错误] 系统未检测到 Python 命令！
-    echo   请先安装 Python 3.10 或更高版本，并在安装时勾选
-    echo   "Add Python to PATH"（添加到系统环境变量）。
+    echo   [ERROR] No usable Python found in PATH.
+    echo   Install Python 3.10+ and enable "Add Python to PATH".
     echo ========================================================
     pause
     exit /b 1
 )
 
-REM 2. 检查关键依赖库是否已安装，若缺失则自动从 requirements.txt 安装
-python -c "import PySide6, numpy, pandas, PIL, imageio_ffmpeg" >nul 2>nul
+rem 2. Check dependencies, auto-install on first run
+"%PY%" -c "import PySide6, numpy, pandas, PIL, imageio_ffmpeg" >nul 2>nul
 if %errorlevel% neq 0 (
-    echo ========================================================
-    echo   首次运行提示：检测到尚未安装运行所需依赖
-    echo   正在自动执行: pip install -r requirements.txt
-    echo   请稍候...
-    echo ========================================================
-    python -m pip install -r requirements.txt
-    if %errorlevel% neq 0 (
+    echo First run: installing dependencies from requirements.txt ...
+    "%PY%" -m pip install -r requirements.txt
+    if errorlevel 1 (
         echo.
-        echo [错误] 依赖安装失败，请检查网络连接或手动运行:
-        echo        pip install -r requirements.txt
+        echo [ERROR] Dependency install failed. Check network or run manually:
+        echo         "%PY%" -m pip install -r requirements.txt
         pause
         exit /b 1
     )
-    echo.
-    echo [完成] 依赖安装成功，正在启动工作台...
-    echo.
+    echo Dependencies installed.
 )
 
-REM 3. 启动 GUI 桌面工作台
-python scripts\app_gui.py %*
-
+rem 3. Launch desktop workbench and close terminal console
+set "PYW=%PY:python.exe=pythonw.exe%"
+if exist "%PYW%" (
+    start "" "%PYW%" scripts\app_gui.py %*
+) else (
+    start "" "%PY%" scripts\app_gui.py %*
+)
+exit
